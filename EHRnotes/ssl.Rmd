@@ -14,75 +14,78 @@ knitr::opts_chunk$set(echo = TRUE)
 library(matrixStats)
 library(kableExtra)
 
-
-cal_bias_var <- function(x, y, label.size) {
-  x.lab <- x[1: label.size]
-  y.lab <- y[1: label.size]
-  
-  mod <- lm(y.lab~x.lab)
-  
-  sl <- mean(y.lab)
-  sl.bias <- sl - mean(y)
-  sl.sd <- sd(y.lab)
-  
-  x.unlab <- x[(label.size+1):length(y)]
-  
-  # m estimator
-  mx <- summary(mod)$coef[1,1] + summary(mod)$coef[2,1] * x.unlab
-  ssl <- mean(mx)
-  ssl.bias <- ssl - mean(y)
-  ssl.sd <- sd(mx)
-  
-  sl.mse <- sl.sd^2 + sl.bias^2
-  ssl.mse <- ssl.sd^2 + sl.bias^2
-  
-  return(c(sl, sl.bias, sl.sd, sl.mse, ssl, ssl.bias, ssl.sd, ssl.ase = 0.5, ssl.mse))
-}
-```
-
-```{r}
-run_sim <- function(N, n_lab, coeff, nsim = 5000, eps_sd = 0.5) {
-  linear <- c()
-  nonlinear_1 <- c()
-  nonlinear_2 <- c()
-  
+gen_dat <- function(N, label.size, beta, nsim = 5000, eps_sd = 0.5) {
+  sl <- c()
+  ssl <- c()
+  ase_ssl <- c()
   for (nn in c(1:nsim)) {
+    # generate Y = beta * X + eps, Y ~ N(0,1), eps ~ N(0, 0.5)
     set.seed(1234 + nn)
     x <- rnorm(N, 0, 1)
     eps <- rnorm(N, mean=0, sd=0.5)
-
-    y = coeff*x + eps
-    linear <- rbind(linear, cal_bias_var(x, y, n_lab))
-  
-    w <- coeff*x + coeff*x^2 + eps
-    nonlinear_1 <- rbind(nonlinear_1, cal_bias_var(x, w, n_lab))
-  
-    z <- coeff*x + coeff*x^2 + coeff*x^3 + eps
-    nonlinear_2 <- rbind(nonlinear_2, cal_bias_var(x, z, n_lab))
+    y = beta*x + eps
+    
+    # calculate SL
+    x.lab <- x[1: label.size]
+    y.lab <- y[1: label.size]
+    mod <- lm(y.lab ~ x.lab)
+    sl <- c(sl, mean(y.lab))
+    
+    # calcualte SSL
+    x.unlab <- x[(label.size+1):length(y)]
+    y.unlab <- y[(label.size+1):length(y)]
+    # m estimator
+    mx <- summary(mod)$coef[1,1] + summary(mod)$coef[2,1] * x.unlab
+    ssl <- c(ssl, mean(mx))
+    
+    # calcualte the ASE
+    ase_ssl <- c(ase_ssl, sd(y.unlab - beta*x.unlab))
   }
-  
-  return(list(linear = linear, nonlinear_1 = nonlinear_1, nonlinear_2 = nonlinear_2))
+  return(list(sl = sl, ssl = ssl, ase_ssl = ase_ssl))
 }
 ```
 
 ```{r}
+bias_variance_cal <- function(theta, mu) {
+  mean <- mean(theta)
+  bias <- mean - mu
+  ese <- sd(theta)
+  mse <- mean((theta - mu)^2)
+  return(c(mean, bias, ese, mse))
+}
+```
+
+
+```{r}
+run_sim <- function(N, label.size, beta, mu, nsim = 5000, eps_sd = 0.5) {
+  dat <- gen_dat(N, label.size, beta)
+  sl <- dat$sl
+  ssl <- dat$ssl
+  properties_sl <- bias_variance_cal(sl, mu)
+  properties_ssl <- bias_variance_cal(ssl, mu)
+  ase <- mean(dat$ase_ssl)
+  efficiency <- properties_sl[4]/properties_ssl[4]
+  return(c(properties_sl, properties_ssl, ase, efficiency))
+}
+```
+
+
+```{r}
 # Setting 1: compare n = 100, 200, 400
-lab_100_beta_0.5 <- run_sim(10000, 100, 0.5)
-lab_200_beta_0.5 <- run_sim(10000, 200, 0.5)
-lab_400_beta_0.5 <- run_sim(10000, 400, 0.5)
+lab_100_beta_0.5 <- run_sim(10000, 100, 0.5, 0)
+lab_200_beta_0.5 <- run_sim(10000, 200, 0.5, 0)
+lab_400_beta_0.5 <- run_sim(10000, 400, 0.5, 0)
 ```
 
 ```{r}
-table1 <- rbind(colMeans(lab_100_beta_0.5$linear), colMeans(lab_200_beta_0.5$linear), colMeans(lab_400_beta_0.5$linear))
+table1 <- rbind(lab_100_beta_0.5, lab_200_beta_0.5, lab_400_beta_0.5)
 rownames(table1) <- c(100, 200, 400)
-colnames(table1) <- c("SL", "bias", "ESE", "MSE", "SSL", "Bias", "ESE", "ASE", "MSE")
+colnames(table1) <- c("SL", "bias", "ESE", "MSE", "SSL", "Bias", "ESE", "MSE", "ASE", "EFficiency")
 
-Efficiency <- table1[, 4] / table1[, 9]
-table1 <- cbind(table1, Efficiency)
+table1 <- cbind(table1)
 table1 <- round(table1, 4)
 
-
-kableExtra::kbl(table1, booktabs = T, caption="Efficiencies with respect to empirical mean square error for m(x) = 0.5x") %>% 
+kableExtra::kbl(table1, booktabs = T, caption="Efficiencies wrt. empirical mean square error for m(x) = 0.5x") %>% 
   add_header_above(c(" ", "Supervised learning estimator"=4, "Semi-supervised estimator"=5, " ")) %>%
   kable_styling(latex_options = c("scale_down", "hold_position")) 
 ```
@@ -92,50 +95,44 @@ kableExtra::kbl(table1, booktabs = T, caption="Efficiencies with respect to empi
 # Setting 2: N=10000 down to n = 100
 r <- c()
 for (i in seq(100, 10000, 100)) {
-  r <- rbind(r, colMeans(run_sim(i, 100, 0.5, nsim = 1000)$linear))
+  r <- rbind(r, (run_sim(i, 100, 0.5, 0, nsim = 1000)))
 }
 ```
 
 ```{r}
 library(ggplot2)
-Efficiency <- r[, 4] / r[, 9]
+Efficiency <- r[, 10]
 Efficiency[1] <- 1
 
-data.frame(index = c(1:100), eff = Efficiency) %>%
-  ggplot() + geom_point(aes(index, eff)) + ylim(c(1.75, 2)) + 
-  ylab("Relative efficiency (SL:SSL)") + xlab("Unlabeled sample size N") + ggtitle("N = 100 to N = 100000")
+data.frame(index = seq(100, 10000, 100), eff = Efficiency) %>%
+  ggplot() + geom_line(aes(index, eff))  + 
+  ylab("Relative efficiency (SL:SSL)") + xlab("Unlabeled sample size N") + 
+  ggtitle("N = 100 to N = 100000") + theme_bw()
 
 ```
-
 
 ```{r}
-# library(ggplot2)
-# # sa <- stack(as.data.frame(r[, c(7, 3)]))
-# # sa['label'] <- seq(100, 10000, 100)
-# 
-# data.frame(r[, c(7,3)])
-# sa %>% ggplot(aes(x=factor(label), y=values)) + 
-#     geom_point(size = 0.7) + theme_bw() + 
-#   theme(axis.text.x = element_text(size = 5, angle = 90, vjust = 0.5, hjust=1)) + 
-#   ylab("Relative efficiency (SL:SSL)") + xlab("labeled size n")
-```
+ase <- r[, 9]
+ese <- r[, 7]
 
+data.frame(index = seq(100, 10000, 100), ase = ase, ese = ese) %>%
+  ggplot() + geom_line(aes(index, ase))  + geom_line(aes(index, ese)) + 
+  ylab("Relative efficiency (SL:SSL)") + xlab("Unlabeled sample size N") + 
+  ggtitle("N = 100 to N = 100000") + theme_bw()
+
+```
 
 
 ```{r}
 # Setting 3: compare m(x) = 0.5 and m(x) = 2
-lab_400_beta_2 <- run_sim(10000, 400, 2)
+lab_400_beta_2 <- run_sim(10000, 400, 2, 0)
 ```
 
 ```{r}
-table3 <- rbind(colMeans(lab_400_beta_0.5$linear), colMeans(lab_400_beta_2$linear))
+table3 <- rbind(lab_400_beta_0.5, lab_400_beta_2)
 rownames(table3) <- c("m(x) = 0.5x", "m(x) = 2x")
+colnames(table3) <- c("SL", "bias", "ESE", "MSE", "SSL", "Bias", "ESE", "MSE", "ASE", "EFficiency")
 
-colnames(table3) <- c("SL", "bias", "ESE", "MSE", "SSL", "Bias", "ESE", "ASE", "MSE")
-
-Efficiency <- table3[, 4] / table3[, 9]
-table3 <- cbind(table3, Efficiency)
-table3 <- round(table3, 4)
 
 kableExtra::kbl(table3, booktabs = T, caption="Compare m = 0.5x and m(x) = 2x") %>% 
   add_header_above(c(" ", "Supervised learning estimator"=4, "Semi-supervised estimator"=5, " ")) %>%
